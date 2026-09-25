@@ -107,7 +107,7 @@ textarea.f{min-height:84px;resize:vertical}
 </head>
 <body>
 <div id="lock"><div class="box">
-  <h1>Job Database</h1>
+  <h1>Workshop Job Database</h1>
   <p id="lockText">Enter your password.</p>
   <input id="email" type="hidden" autocomplete="username">
   <input id="pin" class="f" type="password" autocomplete="current-password" placeholder="Password">
@@ -124,7 +124,6 @@ textarea.f{min-height:84px;resize:vertical}
   <main id="list"></main>
   <div class="menu">
     <button class="btn" id="csvBtn">Export to Excel (CSV)</button>
-    <button class="btn" id="importBtn">Import from Google Sheet app</button>
     <button class="btn" id="logoutBtn">Log out</button>
   </div>
 </div>
@@ -548,44 +547,6 @@ $("#csvBtn").onclick=()=>{
   setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
 };
 
-/* ---------- one-off import from the old Google Sheet app ---------- */
-$("#importBtn").onclick=async()=>{
-  const url=(prompt("Paste your old Apps Script URL (ends in /exec):")||"").trim();
-  if(!url)return;
-  if(!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url))return alert("That doesn't look like an Apps Script /exec URL.");
-  const pw=prompt("Old app password (the APP_PASSWORD you set in Script Properties):"); if(!pw)return;
-  const api=async(fn,...args)=>{
-    const r=await fetch(url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({fn,args})});
-    const d=await r.json(); if(!d.ok)throw new Error(d.error); return d.result;
-  };
-  const status=m=>{$("#count").textContent=m};
-  try{
-    status("Connecting to old app…");
-    const tok=await api("login",pw);
-    const old=await api("getJobs",tok);
-    if(!confirm(`Found ${old.length} jobs. Import them now? Keep the app open until it finishes.`))return;
-    let done=0, photosDone=0, failed=0;
-    for(const j of old){
-      const refs=[];
-      for(const r of (j.photos||[])){
-        try{
-          const fullId=String(r).split(":")[0];
-          const map=await api("getPhotos",tok,[fullId]);
-          if(!map[fullId])throw new Error("missing");
-          const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=map[fullId]});
-          const ref=await call("uploadPhoto",fitFull(im,im.naturalWidth,im.naturalHeight),drawTo(im,im.naturalWidth,im.naturalHeight,360,0.7));
-          refs.push(ref); photosDone++;
-        }catch(e){failed++}
-        status(`Importing… ${done}/${old.length} jobs, ${photosDone} photos`);
-      }
-      const {id,updated,...rest}=j;
-      await call("saveJob",{...rest,photos:refs,id:String(id||"").replace(/[^\w\-]/g,"")});
-      done++; status(`Importing… ${done}/${old.length} jobs, ${photosDone} photos`);
-    }
-    alert(`Import finished: ${done} jobs and ${photosDone} photos.`+(failed?` ${failed} photos couldn't be copied.`:""));
-  }catch(e){alert("Import failed: "+e.message)}
-  render();
-};
 </script>
 
 <script type="module">
