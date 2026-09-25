@@ -55,10 +55,12 @@ header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background
 .fab{position:fixed;right:18px;bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--accent);color:var(--accent-ink);border:0;border-radius:16px;padding:16px 22px;font-family:"Barlow Condensed";font-weight:700;font-size:1.2rem;box-shadow:0 6px 18px rgba(0,0,0,.25);cursor:pointer}
 .empty{color:var(--muted);text-align:center;padding:50px 10px}
 /* sheet */
-.sheet{position:fixed;inset:0;background:var(--bg);z-index:20;overflow-y:auto;display:none;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.sheet{position:fixed;inset:0;background:var(--bg);z-index:20;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;display:none;padding-bottom:env(safe-area-inset-bottom,0px)}
+#editor{z-index:30}
 .sheet.show{display:block}
-.sheet .bar{position:sticky;top:0;background:var(--bg);display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line);z-index:2}
+.sheet .bar{position:sticky;top:0;background:var(--bg);display:flex;justify-content:space-between;align-items:center;gap:8px;padding:calc(10px + env(safe-area-inset-top,0px)) 14px 10px;border-bottom:1px solid var(--line);z-index:2}
 .sheet .bar h2{font-size:1.4rem}
+.sheet .bar .btn{min-height:44px;min-width:76px;touch-action:manipulation}
 .btn{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 14px;cursor:pointer;font-weight:600}
 .btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .btn.del{color:var(--danger)}
@@ -98,7 +100,7 @@ textarea.f{min-height:84px;resize:vertical}
 .ph img{width:100%;height:100%;object-fit:cover;display:block;cursor:pointer}
 .ph button{position:absolute;top:4px;right:4px;width:28px;height:28px;border-radius:50%;border:0;background:rgba(0,0,0,.65);color:#fff;cursor:pointer}
 .ph.loading::after{content:"…";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted)}
-#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:70;display:none;align-items:center;justify-content:center;padding:env(safe-area-inset-top,0px) 10px env(safe-area-inset-bottom,0px)}
+#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:70;touch-action:pinch-zoom;display:none;align-items:center;justify-content:center;padding:env(safe-area-inset-top,0px) 10px env(safe-area-inset-bottom,0px)}
 #lightbox.show{display:flex}
 #lightbox img{max-width:100%;max-height:100%;object-fit:contain}
 </style>
@@ -189,15 +191,20 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 let jobs=[], filterCat=null, editingId=null, viewingId=null;
 const toast=m=>{const t=$("#toast");t.textContent=m;t.style.display="block";clearTimeout(t._t);t._t=setTimeout(()=>t.style.display="none",2200)};
 /* ====== SETUP: paste your Apps Script web app URL (ends in /exec) between the quotes ====== */
-const API_URL = "https://script.google.com/macros/s/AKfycbxl0dDZlBHOqPxSTrfXtV9q1Iu4W4HnbHH7ZwBDacvUJVF9LLFnIQ-oIZ7oMX73ltKHmg/exec";
+const API_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
 /* ========================================================================================= */
 async function rawCall(fn,...args){
   if(!/^https:\/\/script\.google\.com\/.+\/exec$/.test(API_URL)) throw new Error("App not set up: add your Apps Script URL to API_URL in index.html.");
   let r;
   try{
     // text/plain keeps this a "simple" request, which Apps Script accepts from other sites.
-    r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({fn,args}),redirect:"follow"});
-  }catch(e){throw new Error("No connection. Check your signal and try again.")}
+    const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),fn==="uploadPhoto"?90000:30000);
+    try{ r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({fn,args}),redirect:"follow",signal:ctl.signal}); }
+    finally{ clearTimeout(timer); }
+  }catch(e){
+    if(e.name==="AbortError") throw new Error("The server didn't respond. Open your Apps Script URL in a browser tab to check it's running, then try again.");
+    throw new Error("Couldn't reach the server. Check your signal, and that the Apps Script is deployed with access set to 'Anyone'.");
+  }
   let d; try{d=await r.json()}catch(e){throw new Error("Unexpected reply from the server. Check the Apps Script deployment is set to 'Anyone'.")}
   if(!d.ok) throw new Error(d.error);
   return d.result;
@@ -209,7 +216,7 @@ const call=async(fn,...args)=>{
 };
 function showLogin(msg){
   token=null; try{localStorage.removeItem("jdb-token")}catch(e){}
-  closeSheets&&closeSheets(); $("#lock").style.display="flex"; $("#lockMsg").textContent=msg||""; $("#pin").value=""; setTimeout(()=>$("#pin").focus(),50);
+  closeAll(); $("#lock").style.display="flex"; $("#lockMsg").textContent=msg||""; $("#pin").value=""; setTimeout(()=>$("#pin").focus(),50);
 }
 async function doLogin(){
   const b=$("#unlockBtn"); if(b.disabled)return; b.disabled=true; b.textContent="Checking…"; $("#lockMsg").textContent="";
@@ -225,10 +232,19 @@ function startApp(){
   call("getSheetUrl").then(u=>{const a=$("#sheetLink");a.href=u;a.style.display="inline-block"}).catch(()=>{});
 }
 async function load(){
-  $("#list").innerHTML='<div class="empty">Loading jobs…</div>';
-  try{jobs=await call("getJobs");render();if(viewingId&&$("#viewer").classList.contains("show"))showDetail(viewingId)}
-  catch(e){$("#list").innerHTML='<div class="empty">Couldn\'t load jobs: '+esc(e.message)+'</div>'}
+  // Show the last copy saved on this phone straight away, then refresh from the server.
+  if(!jobs.length){try{const c=JSON.parse(localStorage.getItem("jdb-jobs")||"null");if(c){jobs=c;render()}}catch(e){}}
+  if(!jobs.length)$("#list").innerHTML='<div class="empty">Loading jobs…</div>';
+  $("#count").textContent=(jobs.length?jobs.length+" jobs · ":"")+"syncing…";
+  try{
+    jobs=await call("getJobs"); cacheJobs(); render();
+    if(viewingId&&$("#viewer").classList.contains("show")&&!$("#editor").classList.contains("show"))showDetail(viewingId);
+  }catch(e){
+    if(jobs.length){render();toast("Couldn't refresh: "+e.message)}
+    else $("#list").innerHTML='<div class="empty">Couldn\'t load jobs: '+esc(e.message)+'</div>';
+  }
 }
+function cacheJobs(){try{localStorage.setItem("jdb-jobs",JSON.stringify(jobs))}catch(e){}}
 /* ---------- list ---------- */
 function haystack(j){return [j.make,j.model,j.year,j.engine,j.gearbox,j.reg,j.vin,j.symptoms,j.diag,j.cause,j.notes,(j.codes||[]).join(" "),(j.cats||[]).join(" "),(j.parts||[]).map(p=>p.name+" "+p.pn).join(" ")].join(" ").toLowerCase()}
 function matches(j,q){ if(filterCat&&!(j.cats||[]).includes(filterCat))return false; if(!q)return true; const h=haystack(j); return q.toLowerCase().split(/\s+/).filter(Boolean).every(w=>h.includes(w)) }
@@ -264,7 +280,7 @@ $("#list").onclick=e=>{const b=e.target.closest(".job");if(b)showDetail(b.datase
 
 /* ---------- detail ---------- */
 function showDetail(id){
-  const j=jobs.find(x=>x.id===id); if(!j)return closeSheets(); viewingId=id;
+  const j=jobs.find(x=>x.id===id); if(!j)return closeAll(); viewingId=id;
   const sec=(t,v)=>v?`<section><h3>${t}</h3><p>${esc(v)}</p></section>`:"";
   const sim=jobs.filter(x=>x.id!==id&&x.make===j.make&&(x.model===j.model||(x.cats||[]).some(c=>(j.cats||[]).includes(c)))).slice(0,6);
   $("#detail").innerHTML=`<h2 class="big">${esc(j.make)} ${esc(j.model)}</h2>
@@ -281,7 +297,7 @@ function showDetail(id){
    ${sec("Notes",j.notes)}
    ${(j.photos||[]).length?`<section><h3>Photos</h3><div class="phgrid">${j.photos.map(p=>`<div class="ph loading" data-pid="${esc(p)}"></div>`).join("")}</div></section>`:""}
    ${sim.length?`<div class="similar"><h3 style="margin-bottom:6px">Related ${esc(j.make)} jobs</h3>${sim.map(card).join("")}</div>`:""}`;
-  $("#viewer").classList.add("show"); $("#viewer").scrollTop=0;
+  openSheet("viewer"); $("#viewer").scrollTop=0;
   $("#detail").querySelectorAll(".ph[data-pid]").forEach(fillPhoto);
 }
 const row=(k,v)=>v?`<tr><td>${k}</td><td>${esc(v)}</td></tr>`:"";
@@ -299,7 +315,7 @@ function openEditor(id){
   $("#e_parts").innerHTML=""; (j.parts&&j.parts.length?j.parts:[{name:"",pn:""}]).forEach(addPartRow);
   edPhotos=[...(j.photos||[])]; newUploads=[]; removedPhotos=[]; renderEdPhotos();
   $("#delBtn").style.display=id?"inline-block":"none";
-  syncVehicleSelects(); $("#editor").classList.add("show"); $("#editor").scrollTop=0;
+  syncVehicleSelects(); openSheet("editor"); $("#editor").scrollTop=0;
 }
 function addPartRow(p={name:"",pn:""}){
   const d=document.createElement("div");d.className="prow";
@@ -404,77 +420,157 @@ $("#saveBtn").onclick=async()=>{
   saving=true; $("#saveBtn").textContent="Saving…";
   try{const saved=await call("saveJob",o);
     const i=jobs.findIndex(x=>x.id===saved.id); if(i>=0)jobs[i]=saved; else jobs.push(saved);
-    render(); toast("Saved");
-    if(removedPhotos.length)call("trashPhotos",removedPhotos).catch(()=>{}); newUploads=[]; removedPhotos=[]; $("#editor").classList.remove("show"); if(editingId)showDetail(saved.id);}
+    cacheJobs(); render(); toast("Saved");
+    if(removedPhotos.length)call("trashPhotos",removedPhotos).catch(()=>{}); newUploads=[]; removedPhotos=[]; const wasEdit=editingId; closeTop(); if(wasEdit)showDetail(saved.id);}
   catch(e){toast("Save failed: "+e.message)}
   $("#saveBtn").textContent="Save";
   saving=false;
 };
-$("#delBtn").onclick=async()=>{if(!confirm("Delete this job permanently?"))return;try{await call("deleteJob",editingId);jobs=jobs.filter(x=>x.id!==editingId);render();closeSheets();toast("Deleted")}catch(e){toast("Delete failed")}};
+$("#delBtn").onclick=async()=>{if(!confirm("Delete this job permanently?"))return;try{await call("deleteJob",editingId);jobs=jobs.filter(x=>x.id!==editingId);cacheJobs();render();newUploads=[];closeAll();toast("Deleted")}catch(e){toast("Delete failed")}};
 $("#addBtn").onclick=()=>openEditor();
-function closeSheets(){document.querySelectorAll(".sheet").forEach(s=>s.classList.remove("show"))}
-document.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>{
-  const s=b.closest(".sheet");
-  if(s.id==="editor"&&newUploads.length){call("trashPhotos",newUploads).catch(()=>{});newUploads=[];}
-  s.classList.remove("show");
+/* ---------- screens & the phone's back button ---------- */
+// Each open screen adds a browser history entry, so the phone's back
+// gesture/button closes the top screen instead of leaving the app.
+const stack=[];
+function showEl(name,on){ if(name==="lightbox")$("#lightbox").classList.toggle("show",on); else $("#"+name).classList.toggle("show",on); }
+function openSheet(name){
+  if(stack.includes(name)){showEl(name,true);return}
+  stack.push(name); showEl(name,true);
+  history.pushState({depth:stack.length},"");
+}
+function hideTop(){
+  const name=stack.pop(); if(!name)return;
+  if(name==="editor"&&newUploads.length){call("trashPhotos",newUploads).catch(()=>{});newUploads=[];}
+  showEl(name,false);
+}
+function closeTop(){ if(stack.length)history.back(); }
+function closeAll(){ if(stack.length)history.go(-stack.length); }
+window.addEventListener("popstate",e=>{
+  const depth=(e.state&&e.state.depth)||0;
+  while(stack.length>depth)hideTop();
 });
+history.replaceState({depth:0},"");
+document.querySelectorAll("[data-close]").forEach(b=>b.onclick=closeTop);
 
 /* ---------- photos ---------- */
+// A stored photo reference is "fullId:thumbId" (older photos are just "fullId").
 let edPhotos=[], newUploads=[], removedPhotos=[], uploading=0;
-const photoCache={};
+const fullOf=r=>String(r).split(":")[0], thumbOf=r=>String(r).split(":")[1]||"";
+const mem=new Map();
+
+// Photos are kept on the phone after the first download, so they only load once.
+const idb=new Promise(res=>{try{const r=indexedDB.open("jdb",1);r.onupgradeneeded=()=>r.result.createObjectStore("p");r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)}catch(e){res(null)}});
+async function idbGet(k){const d=await idb;if(!d)return null;return new Promise(r=>{try{const q=d.transaction("p").objectStore("p").get(k);q.onsuccess=()=>r(q.result||null);q.onerror=()=>r(null)}catch(e){r(null)}})}
+async function idbPut(k,v){const d=await idb;if(!d)return;try{d.transaction("p","readwrite").objectStore("p").put(v,k)}catch(e){}}
+
+// Server requests are batched: several photos per request, two requests at a time.
+const queue=[], waiting=new Map(); let active=0;
+function fetchPhoto(id){
+  return new Promise((res,rej)=>{
+    if(waiting.has(id)){waiting.get(id).push([res,rej]);return}
+    waiting.set(id,[[res,rej]]); queue.push(id); pump();
+  });
+}
+async function pump(){
+  while(active<2&&queue.length){
+    const batch=queue.splice(0,6); active++;
+    call("getPhotos",batch).then(map=>{
+      batch.forEach(id=>{const cbs=waiting.get(id)||[];waiting.delete(id);
+        map&&map[id]?cbs.forEach(([r])=>r(map[id])):cbs.forEach(([,j])=>j(new Error("missing")));});
+    }).catch(err=>{batch.forEach(id=>{(waiting.get(id)||[]).forEach(([,j])=>j(err));waiting.delete(id)})})
+    .finally(()=>{active--;pump()});
+  }
+}
+async function loadImage(key,id,makeSmall){
+  if(mem.has(key))return mem.get(key);
+  const p=(async()=>{
+    let url=await idbGet(key); if(url)return url;
+    url=await fetchPhoto(id);
+    if(makeSmall)url=await downscale(url,360,0.7);
+    idbPut(key,url); return url;
+  })();
+  mem.set(key,p); p.catch(()=>mem.delete(key)); return p;
+}
+// Thumbnail for the grids. Older photos without a thumbnail are shrunk on the phone once.
+const thumbUrl=ref=>thumbOf(ref)?loadImage("t:"+thumbOf(ref),thumbOf(ref),false):loadImage("s:"+fullOf(ref),fullOf(ref),true);
+const fullUrl=ref=>loadImage("f:"+fullOf(ref),fullOf(ref),false);
+
 async function fillPhoto(el){
-  const id=el.dataset.pid;
+  const ref=el.dataset.pid;
   try{
-    if(!photoCache[id])photoCache[id]=call("getPhoto",id);
-    const url=await photoCache[id];
+    const url=await thumbUrl(ref);
     el.classList.remove("loading");
-    el.insertAdjacentHTML("afterbegin",`<img src="${url}" alt="">`);
-  }catch(e){delete photoCache[id];el.classList.remove("loading");el.textContent="⚠";}
+    const img=new Image(); img.alt=""; img.decoding="async"; img.src=url; img.dataset.ref=ref;
+    el.prepend(img);
+  }catch(e){el.classList.remove("loading");el.insertAdjacentHTML("afterbegin",'<span style="display:flex;height:100%;align-items:center;justify-content:center">⚠</span>');}
 }
 function renderEdPhotos(){
   const g=$("#e_photos");
   g.innerHTML=edPhotos.map(p=>`<div class="ph loading" data-pid="${esc(p)}"><button type="button" data-rm="${esc(p)}" aria-label="Remove photo">✕</button></div>`).join("");
   g.querySelectorAll(".ph").forEach(fillPhoto);
 }
-$("#e_photos").onclick=e=>{
+$("#e_photos").addEventListener("click",e=>{
   const b=e.target.closest("[data-rm]"); if(!b)return;
+  e.stopPropagation();
   const id=b.dataset.rm; edPhotos=edPhotos.filter(x=>x!==id);
   if(newUploads.includes(id)){newUploads=newUploads.filter(x=>x!==id);call("trashPhotos",[id]).catch(()=>{});}
   else removedPhotos.push(id);
   renderEdPhotos();
-};
-document.addEventListener("click",e=>{
-  const img=e.target.closest(".ph img"); if(!img)return;
-  $("#lightbox img").src=img.src; $("#lightbox").classList.add("show");
 });
-$("#lightbox").onclick=()=>$("#lightbox").classList.remove("show");
-function shrink(file,max=1600){
-  return new Promise((res,rej)=>{
-    const url=URL.createObjectURL(file), im=new Image();
-    im.onload=()=>{
-      const s=Math.min(1,max/Math.max(im.width,im.height));
-      const c=document.createElement("canvas"); c.width=Math.round(im.width*s); c.height=Math.round(im.height*s);
-      c.getContext("2d").drawImage(im,0,0,c.width,c.height); URL.revokeObjectURL(url);
-      res(c.toDataURL("image/jpeg",0.82));
-    };
-    im.onerror=()=>{URL.revokeObjectURL(url);rej(new Error("Can't read image"))};
-    im.src=url;
-  });
+document.addEventListener("click",async e=>{
+  const img=e.target.closest(".ph img"); if(!img)return;
+  const lb=$("#lightbox img"); lb.src=img.src; openSheet("lightbox");
+  try{const u=await fullUrl(img.dataset.ref); if(stack.includes("lightbox"))lb.src=u}catch(err){}
+});
+$("#lightbox").onclick=closeTop;
+
+function downscale(src,max,q){
+  return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(drawTo(im,im.naturalWidth,im.naturalHeight,max,q));im.onerror=()=>rej(new Error("bad image"));im.src=src});
 }
-function upStatus(){ $("#upStatus").textContent=uploading?`Uploading ${uploading} photo${uploading>1?"s":""}…`:""; }
+function drawTo(source,w,h,max,q){
+  const s=Math.min(1,max/Math.max(w,h));
+  const c=document.createElement("canvas"); c.width=Math.max(1,Math.round(w*s)); c.height=Math.max(1,Math.round(h*s));
+  const ctx=c.getContext("2d"); ctx.imageSmoothingQuality="high"; ctx.drawImage(source,0,0,c.width,c.height);
+  const out=c.toDataURL("image/jpeg",q); c.width=c.height=0; return out;
+}
+// Decodes a camera photo at a reduced size where the browser allows it (saves a lot of memory
+// on modern phones with 48MP+ cameras), then makes a 1600px copy and a 360px thumbnail.
+async function prepare(file){
+  let bmp=null;
+  if(window.createImageBitmap){
+    try{bmp=await createImageBitmap(file,{resizeWidth:2000,resizeQuality:"high"})}catch(e){}
+    if(!bmp){try{bmp=await createImageBitmap(file)}catch(e){}}
+  }
+  if(bmp){
+    const full=drawTo(bmp,bmp.width,bmp.height,1600,0.8), thumb=drawTo(bmp,bmp.width,bmp.height,360,0.7);
+    bmp.close&&bmp.close(); return {full,thumb};
+  }
+  const url=URL.createObjectURL(file);
+  try{
+    const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error("This photo format can't be read. Try taking it as a JPEG."));i.src=url});
+    return {full:drawTo(im,im.naturalWidth,im.naturalHeight,1600,0.8),thumb:drawTo(im,im.naturalWidth,im.naturalHeight,360,0.7)};
+  }finally{URL.revokeObjectURL(url)}
+}
+function upStatus(){ $("#upStatus").textContent=uploading?`Uploading ${uploading} photo${uploading>1?"s":""}… keep this screen open`:""; }
 $("#photoInput").onchange=async e=>{
   const files=[...e.target.files]; e.target.value="";
   uploading+=files.length; upStatus();
   for(const f of files){
     try{
-      const dataUrl=await shrink(f);
-      const id=await call("uploadPhoto",dataUrl.split(",")[1],(f.name||"photo").replace(/\.[^.]+$/,"")+".jpg");
-      photoCache[id]=Promise.resolve(dataUrl);
-      edPhotos.push(id); newUploads.push(id); renderEdPhotos();
-    }catch(err){toast("A photo failed to upload")}
+      const {full,thumb}=await prepare(f);
+      const name=(f.name||"photo").replace(/\.[^.]+$/,"");
+      let ref;
+      try{ref=await call("uploadPhoto",full.split(",")[1],thumb.split(",")[1],name)}
+      catch(err){ if(/AUTH/.test(err.message))throw err; ref=await call("uploadPhoto",full.split(",")[1],thumb.split(",")[1],name); } // one retry
+      mem.set("t:"+thumbOf(ref),Promise.resolve(thumb)); idbPut("t:"+thumbOf(ref),thumb);
+      mem.set("f:"+fullOf(ref),Promise.resolve(full));
+      edPhotos.push(ref); newUploads.push(ref); renderEdPhotos();
+    }catch(err){toast("Photo failed: "+(err.message||err))}
     uploading--; upStatus();
   }
 };
+window.addEventListener("error",e=>toast("Error: "+e.message));
+window.addEventListener("unhandledrejection",e=>{const m=e.reason&&e.reason.message;if(m&&!/AUTH/.test(m))toast("Error: "+m)});
 
 $("#refreshBtn").onclick=load;
 $("#unlockBtn").onclick=doLogin;
