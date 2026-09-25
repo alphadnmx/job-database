@@ -108,7 +108,8 @@ textarea.f{min-height:84px;resize:vertical}
 <body>
 <div id="lock"><div class="box">
   <h1>Job Database</h1>
-  <p>Enter your password.</p>
+  <p id="lockText">Log in to continue.</p>
+  <input id="email" class="f" type="email" autocomplete="username" placeholder="Email" style="letter-spacing:0;font-size:1rem">
   <input id="pin" class="f" type="password" autocomplete="current-password" placeholder="Password">
   <button id="unlockBtn" class="btn pri" style="width:100%">Log in</button>
   <div class="msg" id="lockMsg"></div>
@@ -122,8 +123,8 @@ textarea.f{min-height:84px;resize:vertical}
   </header>
   <main id="list"></main>
   <div class="menu">
-    <a class="btn" id="sheetLink" target="_blank" rel="noopener" style="text-decoration:none;display:none">Open the Google Sheet</a>
-    <button class="btn" id="refreshBtn">Refresh</button>
+    <button class="btn" id="csvBtn">Export to Excel (CSV)</button>
+    <button class="btn" id="importBtn">Import from Google Sheet app</button>
     <button class="btn" id="logoutBtn">Log out</button>
   </div>
 </div>
@@ -190,61 +191,40 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let jobs=[], filterCat=null, editingId=null, viewingId=null;
 const toast=m=>{const t=$("#toast");t.textContent=m;t.style.display="block";clearTimeout(t._t);t._t=setTimeout(()=>t.style.display="none",2200)};
-/* ====== SETUP: paste your Apps Script web app URL (ends in /exec) between the quotes ====== */
-const API_URL = "PASTE_YOUR_APPS_SCRIPT_URL_HERE";
-/* ========================================================================================= */
-async function rawCall(fn,...args){
-  if(!/^https:\/\/script\.google\.com\/.+\/exec$/.test(API_URL)) throw new Error("App not set up: add your Apps Script URL to API_URL in index.html.");
-  let r;
-  try{
-    // text/plain keeps this a "simple" request, which Apps Script accepts from other sites.
-    const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),fn==="uploadPhoto"?90000:30000);
-    try{ r=await fetch(API_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({fn,args}),redirect:"follow",signal:ctl.signal}); }
-    finally{ clearTimeout(timer); }
-  }catch(e){
-    if(e.name==="AbortError") throw new Error("The server didn't respond. Open your Apps Script URL in a browser tab to check it's running, then try again.");
-    throw new Error("Couldn't reach the server. Check your signal, and that the Apps Script is deployed with access set to 'Anyone'.");
-  }
-  let d; try{d=await r.json()}catch(e){throw new Error("Unexpected reply from the server. Check the Apps Script deployment is set to 'Anyone'.")}
-  if(!d.ok) throw new Error(d.error);
-  return d.result;
-}
-let token=null; try{token=localStorage.getItem("jdb-token")}catch(e){}
-const call=async(fn,...args)=>{
-  try{return await rawCall(fn,token,...args)}
-  catch(e){ if(String(e&&e.message).includes("AUTH")){showLogin("Please log in again.");} throw e; }
-};
+// Firebase is loaded by the module script at the bottom of the page.
+let fbResolve; const fbReady=new Promise(r=>fbResolve=r);
+let FB=null;
+// Same function names the page used before, now backed by Firebase.
+const call=async(fn,...args)=>{ await fbReady; if(!FB.uid)throw new Error("Not logged in"); return FB[fn](...args); };
 function showLogin(msg){
-  token=null; try{localStorage.removeItem("jdb-token")}catch(e){}
-  closeAll(); $("#lock").style.display="flex"; $("#lockMsg").textContent=msg||""; $("#pin").value=""; setTimeout(()=>$("#pin").focus(),50);
+  closeAll(); $("#lock").style.display="flex"; $("#lockMsg").textContent=msg||""; $("#pin").value="";
+  setTimeout(()=>($("#email").value?$("#pin"):$("#email")).focus(),50);
 }
 async function doLogin(){
   const b=$("#unlockBtn"); if(b.disabled)return; b.disabled=true; b.textContent="Checking…"; $("#lockMsg").textContent="";
-  try{
-    token=await rawCall("login",$("#pin").value);
-    try{localStorage.setItem("jdb-token",token)}catch(e){}
-    $("#pin").value=""; $("#lock").style.display="none"; startApp();
-  }catch(e){ $("#lockMsg").textContent=String(e.message||e).replace(/^.*?(Error|Exception):\s*/,""); }
+  try{ await fbReady; await FB.login($("#email").value.trim(),$("#pin").value); $("#pin").value=""; }
+  catch(e){
+    const c=e.code||"";
+    $("#lockMsg").textContent=/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)?"Wrong email or password.":
+      /too-many-requests/.test(c)?"Too many attempts. Wait a few minutes and try again.":
+      /network/.test(c)?"No connection. Check your signal.":(e.message||String(e));
+  }
   b.disabled=false; b.textContent="Log in";
 }
+let unsubJobs=null;
 function startApp(){
-  load();
-  call("getSheetUrl").then(u=>{const a=$("#sheetLink");a.href=u;a.style.display="inline-block"}).catch(()=>{});
-}
-async function load(){
-  // Show the last copy saved on this phone straight away, then refresh from the server.
-  if(!jobs.length){try{const c=JSON.parse(localStorage.getItem("jdb-jobs")||"null");if(c){jobs=c;render()}}catch(e){}}
+  $("#lock").style.display="none";
+  if(unsubJobs)return;
   if(!jobs.length)$("#list").innerHTML='<div class="empty">Loading jobs…</div>';
-  $("#count").textContent=(jobs.length?jobs.length+" jobs · ":"")+"syncing…";
-  try{
-    jobs=await call("getJobs"); cacheJobs(); render();
+  // Live connection: changes appear instantly, and the app works offline from the phone's copy.
+  unsubJobs=FB.watchJobs(list=>{
+    jobs=list; render();
     if(viewingId&&$("#viewer").classList.contains("show")&&!$("#editor").classList.contains("show"))showDetail(viewingId);
-  }catch(e){
-    if(jobs.length){render();toast("Couldn't refresh: "+e.message)}
-    else $("#list").innerHTML='<div class="empty">Couldn\'t load jobs: '+esc(e.message)+'</div>';
-  }
+  },err=>{$("#list").innerHTML='<div class="empty">Couldn&#39;t load jobs: '+esc(err.message)+'</div>'});
 }
-function cacheJobs(){try{localStorage.setItem("jdb-jobs",JSON.stringify(jobs))}catch(e){}}
+function stopApp(){ if(unsubJobs){unsubJobs();unsubJobs=null} jobs=[]; render(); }
+function load(){}
+function cacheJobs(){}
 /* ---------- list ---------- */
 function haystack(j){return [j.make,j.model,j.year,j.engine,j.gearbox,j.reg,j.vin,j.symptoms,j.diag,j.cause,j.notes,(j.codes||[]).join(" "),(j.cats||[]).join(" "),(j.parts||[]).map(p=>p.name+" "+p.pn).join(" ")].join(" ").toLowerCase()}
 function matches(j,q){ if(filterCat&&!(j.cats||[]).includes(filterCat))return false; if(!q)return true; const h=haystack(j); return q.toLowerCase().split(/\s+/).filter(Boolean).every(w=>h.includes(w)) }
@@ -455,45 +435,17 @@ document.querySelectorAll("[data-close]").forEach(b=>b.onclick=closeTop);
 /* ---------- photos ---------- */
 // A stored photo reference is "fullId:thumbId" (older photos are just "fullId").
 let edPhotos=[], newUploads=[], removedPhotos=[], uploading=0;
-const fullOf=r=>String(r).split(":")[0], thumbOf=r=>String(r).split(":")[1]||"";
+const fullOf=r=>String(r), thumbOf=r=>String(r);
 const mem=new Map();
-
-// Photos are kept on the phone after the first download, so they only load once.
-const idb=new Promise(res=>{try{const r=indexedDB.open("jdb",1);r.onupgradeneeded=()=>r.result.createObjectStore("p");r.onsuccess=()=>res(r.result);r.onerror=()=>res(null)}catch(e){res(null)}});
-async function idbGet(k){const d=await idb;if(!d)return null;return new Promise(r=>{try{const q=d.transaction("p").objectStore("p").get(k);q.onsuccess=()=>r(q.result||null);q.onerror=()=>r(null)}catch(e){r(null)}})}
-async function idbPut(k,v){const d=await idb;if(!d)return;try{d.transaction("p","readwrite").objectStore("p").put(v,k)}catch(e){}}
-
-// Server requests are batched: several photos per request, two requests at a time.
-const queue=[], waiting=new Map(); let active=0;
-function fetchPhoto(id){
-  return new Promise((res,rej)=>{
-    if(waiting.has(id)){waiting.get(id).push([res,rej]);return}
-    waiting.set(id,[[res,rej]]); queue.push(id); pump();
-  });
-}
-async function pump(){
-  while(active<2&&queue.length){
-    const batch=queue.splice(0,6); active++;
-    call("getPhotos",batch).then(map=>{
-      batch.forEach(id=>{const cbs=waiting.get(id)||[];waiting.delete(id);
-        map&&map[id]?cbs.forEach(([r])=>r(map[id])):cbs.forEach(([,j])=>j(new Error("missing")));});
-    }).catch(err=>{batch.forEach(id=>{(waiting.get(id)||[]).forEach(([,j])=>j(err));waiting.delete(id)})})
-    .finally(()=>{active--;pump()});
-  }
-}
-async function loadImage(key,id,makeSmall){
+function loadImage(kind,id){
+  const key=kind+":"+id;
   if(mem.has(key))return mem.get(key);
-  const p=(async()=>{
-    let url=await idbGet(key); if(url)return url;
-    url=await fetchPhoto(id);
-    if(makeSmall)url=await downscale(url,360,0.7);
-    idbPut(key,url); return url;
-  })();
+  const p=call(kind==="t"?"getThumb":"getFull",id);
   mem.set(key,p); p.catch(()=>mem.delete(key)); return p;
 }
-// Thumbnail for the grids. Older photos without a thumbnail are shrunk on the phone once.
-const thumbUrl=ref=>thumbOf(ref)?loadImage("t:"+thumbOf(ref),thumbOf(ref),false):loadImage("s:"+fullOf(ref),fullOf(ref),true);
-const fullUrl=ref=>loadImage("f:"+fullOf(ref),fullOf(ref),false);
+const thumbUrl=ref=>loadImage("t",ref);
+const fullUrl=ref=>loadImage("f",ref);
+function idbPut(){}
 
 async function fillPhoto(el){
   const ref=el.dataset.pid;
@@ -533,6 +485,14 @@ function drawTo(source,w,h,max,q){
   const ctx=c.getContext("2d"); ctx.imageSmoothingQuality="high"; ctx.drawImage(source,0,0,c.width,c.height);
   const out=c.toDataURL("image/jpeg",q); c.width=c.height=0; return out;
 }
+// Each photo must fit in one database document (1 MB), so step the size/quality down if needed.
+function fitFull(src,w,h){
+  let out="";
+  for(const [max,q] of [[1600,0.8],[1600,0.68],[1400,0.62],[1200,0.6],[1000,0.55]]){
+    out=drawTo(src,w,h,max,q); if(out.length<900000)return out;
+  }
+  return out;
+}
 // Decodes a camera photo at a reduced size where the browser allows it (saves a lot of memory
 // on modern phones with 48MP+ cameras), then makes a 1600px copy and a 360px thumbnail.
 async function prepare(file){
@@ -542,13 +502,13 @@ async function prepare(file){
     if(!bmp){try{bmp=await createImageBitmap(file)}catch(e){}}
   }
   if(bmp){
-    const full=drawTo(bmp,bmp.width,bmp.height,1600,0.8), thumb=drawTo(bmp,bmp.width,bmp.height,360,0.7);
+    const full=fitFull(bmp,bmp.width,bmp.height), thumb=drawTo(bmp,bmp.width,bmp.height,360,0.7);
     bmp.close&&bmp.close(); return {full,thumb};
   }
   const url=URL.createObjectURL(file);
   try{
     const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error("This photo format can't be read. Try taking it as a JPEG."));i.src=url});
-    return {full:drawTo(im,im.naturalWidth,im.naturalHeight,1600,0.8),thumb:drawTo(im,im.naturalWidth,im.naturalHeight,360,0.7)};
+    return {full:fitFull(im,im.naturalWidth,im.naturalHeight),thumb:drawTo(im,im.naturalWidth,im.naturalHeight,360,0.7)};
   }finally{URL.revokeObjectURL(url)}
 }
 function upStatus(){ $("#upStatus").textContent=uploading?`Uploading ${uploading} photo${uploading>1?"s":""}… keep this screen open`:""; }
@@ -559,11 +519,8 @@ $("#photoInput").onchange=async e=>{
     try{
       const {full,thumb}=await prepare(f);
       const name=(f.name||"photo").replace(/\.[^.]+$/,"");
-      let ref;
-      try{ref=await call("uploadPhoto",full.split(",")[1],thumb.split(",")[1],name)}
-      catch(err){ if(/AUTH/.test(err.message))throw err; ref=await call("uploadPhoto",full.split(",")[1],thumb.split(",")[1],name); } // one retry
-      mem.set("t:"+thumbOf(ref),Promise.resolve(thumb)); idbPut("t:"+thumbOf(ref),thumb);
-      mem.set("f:"+fullOf(ref),Promise.resolve(full));
+      const ref=await call("uploadPhoto",full,thumb);
+      mem.set("t:"+ref,Promise.resolve(thumb)); mem.set("f:"+ref,Promise.resolve(full));
       edPhotos.push(ref); newUploads.push(ref); renderEdPhotos();
     }catch(err){toast("Photo failed: "+(err.message||err))}
     uploading--; upStatus();
@@ -572,11 +529,142 @@ $("#photoInput").onchange=async e=>{
 window.addEventListener("error",e=>toast("Error: "+e.message));
 window.addEventListener("unhandledrejection",e=>{const m=e.reason&&e.reason.message;if(m&&!/AUTH/.test(m))toast("Error: "+m)});
 
-$("#refreshBtn").onclick=load;
 $("#unlockBtn").onclick=doLogin;
 $("#pin").onkeydown=e=>{if(e.key==="Enter")doLogin()};
-$("#logoutBtn").onclick=()=>{if(!confirm("Log out on this device?"))return;const t=token;rawCall("logout",t).catch(()=>{});jobs=[];render();showLogin("")};
-if(token){$("#lock").style.display="none";startApp()} else showLogin("");
+$("#email").onkeydown=e=>{if(e.key==="Enter")$("#pin").focus()};
+$("#logoutBtn").onclick=async()=>{if(!confirm("Log out on this device?"))return;await fbReady;FB.logout()};
+
+/* ---------- export to CSV (opens in Excel / Google Sheets) ---------- */
+$("#csvBtn").onclick=()=>{
+  const cols=[["Date","date"],["Make","make"],["Model","model"],["Year","year"],["Engine","engine"],["Gearbox","gearbox"],["Reg","reg"],["VIN","vin"],["Mileage","miles"],["Status","status"],["Categories",j=>(j.cats||[]).join(", ")],["Symptoms","symptoms"],["Fault Codes",j=>(j.codes||[]).join(", ")],["Diagnostics","diag"],["Root Cause","cause"],["Parts Replaced",j=>(j.parts||[]).map(p=>p.pn?p.name+" ("+p.pn+")":p.name).join("; ")],["Notes","notes"],["Photos",j=>(j.photos||[]).length]];
+  const cell=v=>{v=v==null?"":String(v);return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  const sorted=[...jobs].sort((a,b)=>cmpA(a.make,b.make)||cmpA(a.model,b.model)||(b.year||0)-(a.year||0));
+  const csv="\ufeff"+[cols.map(c=>c[0]).join(","),...sorted.map(j=>cols.map(([,k])=>cell(typeof k==="function"?k(j):j[k])).join(","))].join("\r\n");
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download="job-database-"+new Date().toISOString().slice(0,10)+".csv"; document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
+};
+
+/* ---------- one-off import from the old Google Sheet app ---------- */
+$("#importBtn").onclick=async()=>{
+  const url=(prompt("Paste your old Apps Script URL (ends in /exec):")||"").trim();
+  if(!url)return;
+  if(!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url))return alert("That doesn't look like an Apps Script /exec URL.");
+  const pw=prompt("Old app password (the APP_PASSWORD you set in Script Properties):"); if(!pw)return;
+  const api=async(fn,...args)=>{
+    const r=await fetch(url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({fn,args})});
+    const d=await r.json(); if(!d.ok)throw new Error(d.error); return d.result;
+  };
+  const status=m=>{$("#count").textContent=m};
+  try{
+    status("Connecting to old app…");
+    const tok=await api("login",pw);
+    const old=await api("getJobs",tok);
+    if(!confirm(`Found ${old.length} jobs. Import them now? Keep the app open until it finishes.`))return;
+    let done=0, photosDone=0, failed=0;
+    for(const j of old){
+      const refs=[];
+      for(const r of (j.photos||[])){
+        try{
+          const fullId=String(r).split(":")[0];
+          const map=await api("getPhotos",tok,[fullId]);
+          if(!map[fullId])throw new Error("missing");
+          const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=map[fullId]});
+          const ref=await call("uploadPhoto",fitFull(im,im.naturalWidth,im.naturalHeight),drawTo(im,im.naturalWidth,im.naturalHeight,360,0.7));
+          refs.push(ref); photosDone++;
+        }catch(e){failed++}
+        status(`Importing… ${done}/${old.length} jobs, ${photosDone} photos`);
+      }
+      const {id,updated,...rest}=j;
+      await call("saveJob",{...rest,photos:refs,id:String(id||"").replace(/[^\w\-]/g,"")});
+      done++; status(`Importing… ${done}/${old.length} jobs, ${photosDone} photos`);
+    }
+    alert(`Import finished: ${done} jobs and ${photosDone} photos.`+(failed?` ${failed} photos couldn't be copied.`:""));
+  }catch(e){alert("Import failed: "+e.message)}
+  render();
+};
+</script>
+
+<script type="module">
+/* ====================== SETUP: paste your Firebase config here ======================
+   Firebase console → Project settings (gear) → Your apps → Web app → "SDK setup and configuration" → Config.
+   Replace the whole object below with the one Firebase shows you. (These values are safe to be public.) */
+const firebaseConfig = {
+  apiKey: "AIzaSyA3R_8ndY9UU5KOCo1R55VEfgnUeNtHQNM",
+  authDomain: "workshop-job-database.firebaseapp.com",
+  projectId: "workshop-job-database",
+  storageBucket: "workshop-job-database.firebasestorage.app",
+  messagingSenderId: "23424823593",
+  appId: "1:23424823593:web:543c8cd087f8cf3e5b0738"
+};
+/* ==================================================================================== */
+
+const V="10.12.2", base=`https://www.gstatic.com/firebasejs/${V}/`;
+try{
+  if(String(firebaseConfig.apiKey).includes("PASTE"))throw new Error("App not set up: paste your Firebase config into index.html.");
+  const {initializeApp}=await import(base+"firebase-app.js");
+  const {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged}=await import(base+"firebase-auth.js");
+  const F=await import(base+"firebase-firestore.js");
+  const app=initializeApp(firebaseConfig);
+  const auth=getAuth(app);
+  let db;
+  try{
+    // Keeps a copy on the phone: instant loading and offline use.
+    db=F.initializeFirestore(app,{localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager(),cacheSizeBytes:200*1024*1024})});
+  }catch(e){ db=F.getFirestore(app); }
+
+  const newId=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  const col=name=>F.collection(db,"users",FB.uid,name);
+  const clean=o=>JSON.parse(JSON.stringify(o)); // strips undefined values Firestore won't accept
+  const report=e=>toast("Sync problem: "+(e.code||e.message));
+
+  FB={
+    uid:null,
+    login:(email,pw)=>signInWithEmailAndPassword(auth,email,pw),
+    logout:()=>signOut(auth),
+    watchJobs(onList,onErr){
+      return F.onSnapshot(col("jobs"),snap=>onList(snap.docs.map(d=>({...d.data(),id:d.id}))),onErr);
+    },
+    // Writes are saved on the phone straight away and sent to Firebase when there's signal.
+    async saveJob(job){
+      const id=job.id||newId("j"); const data={...job}; delete data.id;
+      data.updated=Date.now();
+      F.setDoc(F.doc(col("jobs"),id),clean(data)).catch(report);
+      return {...data,id};
+    },
+    async deleteJob(id){
+      const snap=await F.getDoc(F.doc(col("jobs"),id)).catch(()=>null);
+      const photos=(snap&&snap.exists()&&snap.data().photos)||[];
+      const b=F.writeBatch(db);
+      b.delete(F.doc(col("jobs"),id));
+      photos.forEach(p=>{b.delete(F.doc(col("photos"),p));b.delete(F.doc(col("thumbs"),p))});
+      b.commit().catch(report); return true;
+    },
+    async uploadPhoto(full,thumb){
+      const id=newId("p"); const b=F.writeBatch(db);
+      b.set(F.doc(col("photos"),id),{data:full,created:Date.now()});
+      b.set(F.doc(col("thumbs"),id),{data:thumb,created:Date.now()});
+      const done=b.commit();
+      // Wait for the server when online (so errors show), but don't hang when offline.
+      if(navigator.onLine)await Promise.race([done,new Promise(r=>setTimeout(r,20000))]); else done.catch(report);
+      return id;
+    },
+    async trashPhotos(ids){
+      const b=F.writeBatch(db);
+      (ids||[]).forEach(p=>{b.delete(F.doc(col("photos"),p));b.delete(F.doc(col("thumbs"),p))});
+      b.commit().catch(report); return true;
+    },
+    async getThumb(id){ const s=await F.getDoc(F.doc(col("thumbs"),id)); if(!s.exists())throw new Error("missing"); return s.data().data; },
+    async getFull(id){ const s=await F.getDoc(F.doc(col("photos"),id)); if(!s.exists())throw new Error("missing"); return s.data().data; }
+  };
+  fbResolve();
+  onAuthStateChanged(auth,user=>{
+    FB.uid=user?user.uid:null;
+    if(user)startApp(); else {stopApp();showLogin("");}
+  });
+}catch(e){
+  showLogin(""); $("#lockMsg").textContent=e.message||String(e); $("#unlockBtn").disabled=true;
+}
 </script>
 </body>
 </html>
