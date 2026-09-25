@@ -108,8 +108,8 @@ textarea.f{min-height:84px;resize:vertical}
 <body>
 <div id="lock"><div class="box">
   <h1>Job Database</h1>
-  <p id="lockText">Log in to continue.</p>
-  <input id="email" class="f" type="email" autocomplete="username" placeholder="Email" style="letter-spacing:0;font-size:1rem">
+  <p id="lockText">Enter your password.</p>
+  <input id="email" type="hidden" autocomplete="username">
   <input id="pin" class="f" type="password" autocomplete="current-password" placeholder="Password">
   <button id="unlockBtn" class="btn pri" style="width:100%">Log in</button>
   <div class="msg" id="lockMsg"></div>
@@ -194,18 +194,22 @@ const toast=m=>{const t=$("#toast");t.textContent=m;t.style.display="block";clea
 // Firebase is loaded by the module script at the bottom of the page.
 let fbResolve; const fbReady=new Promise(r=>fbResolve=r);
 let FB=null;
+/* ====== The Firebase login email (from Authentication → Users). Only the password is typed in. ====== */
+const LOGIN_EMAIL = "workshop@workshop-job-database.app";
+/* ====================================================================================================== */
 // Same function names the page used before, now backed by Firebase.
 const call=async(fn,...args)=>{ await fbReady; if(!FB.uid)throw new Error("Not logged in"); return FB[fn](...args); };
 function showLogin(msg){
   closeAll(); $("#lock").style.display="flex"; $("#lockMsg").textContent=msg||""; $("#pin").value="";
-  setTimeout(()=>($("#email").value?$("#pin"):$("#email")).focus(),50);
+  setTimeout(()=>$("#pin").focus(),50);
 }
 async function doLogin(){
   const b=$("#unlockBtn"); if(b.disabled)return; b.disabled=true; b.textContent="Checking…"; $("#lockMsg").textContent="";
-  try{ await fbReady; await FB.login($("#email").value.trim(),$("#pin").value); $("#pin").value=""; }
+  try{ await fbReady; if(LOGIN_EMAIL.includes("PASTE"))throw new Error("App not set up: add your login email to LOGIN_EMAIL in index.html.");
+    await FB.login(LOGIN_EMAIL,$("#pin").value); $("#pin").value=""; }
   catch(e){
     const c=e.code||"";
-    $("#lockMsg").textContent=/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)?"Wrong email or password.":
+    $("#lockMsg").textContent=/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)?"Wrong password.":
       /too-many-requests/.test(c)?"Too many attempts. Wait a few minutes and try again.":
       /network/.test(c)?"No connection. Check your signal.":(e.message||String(e));
   }
@@ -531,7 +535,6 @@ window.addEventListener("unhandledrejection",e=>{const m=e.reason&&e.reason.mess
 
 $("#unlockBtn").onclick=doLogin;
 $("#pin").onkeydown=e=>{if(e.key==="Enter")doLogin()};
-$("#email").onkeydown=e=>{if(e.key==="Enter")$("#pin").focus()};
 $("#logoutBtn").onclick=async()=>{if(!confirm("Log out on this device?"))return;await fbReady;FB.logout()};
 
 /* ---------- export to CSV (opens in Excel / Google Sheets) ---------- */
